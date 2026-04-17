@@ -145,4 +145,254 @@ Full schema in [`schema/schema_v1.sql`](./schema/schema_v1.sql) — run directly
 
 ---
 
+<style>
+.layer-label{font-size:13px;font-weight:500;color:var(--color-text-secondary);margin:0 0 4px}
+.layer-desc{font-size:12px;color:var(--color-text-tertiary);margin:0 0 12px}
+#e1 svg{width:100%!important}
+#e1 svg.erDiagram .divider path{stroke-opacity:.4}
+#e1 svg.erDiagram .row-rect-odd path,#e1 svg.erDiagram .row-rect-odd rect,#e1 svg.erDiagram .row-rect-even path,#e1 svg.erDiagram .row-rect-even rect{stroke:none!important}
+</style>
+<p class="layer-label">Layer 1 — Court reference (v2)</p>
+<p class="layer-desc">No case-identifiable data. Courts, judges, parts, contacts, rules only. All verified_by links use incident UUIDs — never index numbers.</p>
+<div id="e1"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark=matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({startOnLoad:false,theme:'base',fontFamily:'"Anthropic Sans",sans-serif',
+  themeVariables:{darkMode:dark,fontSize:'13px',fontFamily:'"Anthropic Sans",sans-serif',
+    lineColor:dark?'#9c9a92':'#73726c',textColor:dark?'#c2c0b6':'#3d3d3a',
+    primaryColor:dark?'#1D3A5F':'#E6F1FB',primaryTextColor:dark?'#B5D4F4':'#0C447C',
+    primaryBorderColor:dark?'#378ADD':'#185FA5',
+    secondaryColor:dark?'#1A3A2A':'#E1F5EE',tertiaryColor:dark?'#3A2A1A':'#FAEEDA'}});
+const d=`erDiagram
+  courts{
+    uuid id PK
+    string name
+    string county
+    string state
+    string court_type
+    string address
+    string general_phone
+    string general_email
+    boolean ecourts_reliable
+    jsonb extra_data
+    timestamp created_at
+    timestamp updated_at
+  }
+  judges{
+    uuid id PK
+    uuid court_id FK
+    string full_name
+    string honorific
+    string part_name
+    string default_courtroom
+    string enforcement_style
+    string behavior_summary
+    jsonb known_quirks
+    boolean is_active
+    timestamp created_at
+    timestamp updated_at
+  }
+  parts{
+    uuid id PK
+    uuid court_id FK
+    string part_name
+    string part_type
+    string default_courtroom
+    string description
+    jsonb appearance_rules
+    timestamp created_at
+    timestamp updated_at
+  }
+  court_contacts{
+    uuid id PK
+    uuid court_id FK
+    uuid judge_id FK
+    uuid part_id FK
+    string contact_name
+    string role
+    string phone
+    string email
+    string contact_type
+    text what_they_confirmed
+    boolean verified
+    date verified_on
+    uuid verified_by_incident_id FK
+    boolean is_active
+    timestamp created_at
+    timestamp updated_at
+  }
+  court_rules{
+    uuid id PK
+    uuid court_id FK
+    uuid judge_id FK
+    uuid part_id FK
+    string rule_type
+    string rule_title
+    text rule_text
+    string source
+    boolean conflicts_with_general
+    text conflict_note
+    uuid conflict_source_id FK
+    date effective_date
+    boolean is_active
+    timestamp created_at
+    timestamp updated_at
+  }
+  courts||--o{judges:"sits in"
+  courts||--o{parts:"has"
+  courts||--o{court_contacts:"has"
+  courts||--o{court_rules:"governs"
+  judges||--o{court_contacts:"has clerk"
+  judges||--o{court_rules:"imposes"
+  parts||--o{court_contacts:"has clerk"
+  parts||--o{court_rules:"has rules"`;
+const{svg}=await mermaid.render('e1-svg',d);
+document.getElementById('e1').innerHTML=svg;
+document.querySelectorAll('#e1 svg.erDiagram .node').forEach(n=>{
+  const fp=n.querySelector('path[d]');if(!fp)return;
+  const nums=fp.getAttribute('d').match(/-?[\d.]+/g)?.map(Number);
+  if(!nums||nums.length<8)return;
+  const xs=[nums[0],nums[2],nums[4],nums[6]],ys=[nums[1],nums[3],nums[5],nums[7]];
+  const x=Math.min(...xs),y=Math.min(...ys),w=Math.max(...xs)-x,h=Math.max(...ys)-y;
+  const r=document.createElementNS('http://www.w3.org/2000/svg','rect');
+  r.setAttribute('x',x);r.setAttribute('y',y);r.setAttribute('width',w);r.setAttribute('height',h);r.setAttribute('rx','8');
+  for(const a of['fill','stroke','stroke-width','class','style'])if(fp.hasAttribute(a))r.setAttribute(a,fp.getAttribute(a));
+  fp.replaceWith(r);
+});
+document.querySelectorAll('#e1 svg.erDiagram .row-rect-odd path,#e1 svg.erDiagram .row-rect-even path').forEach(p=>p.setAttribute('stroke','none'));
+</script>
+
+[schema_v2_layer1_courts.html](https://github.com/user-attachments/files/26841769/schema_v2_layer1_courts.html)
+
+<style>
+.layer-label{font-size:13px;font-weight:500;color:var(--color-text-secondary);margin:0 0 4px}
+.layer-desc{font-size:12px;color:var(--color-text-tertiary);margin:0 0 12px}
+#e2 svg{width:100%!important}
+#e2 svg.erDiagram .divider path{stroke-opacity:.4}
+#e2 svg.erDiagram .row-rect-odd path,#e2 svg.erDiagram .row-rect-odd rect,#e2 svg.erDiagram .row-rect-even path,#e2 svg.erDiagram .row-rect-even rect{stroke:none!important}
+</style>
+<p class="layer-label">Layer 2 — Cases and incidents (v2)</p>
+<p class="layer-desc">Key change: cases now has internal_ref as the public-facing identifier. index_number, case_name, plaintiff, defendant are encrypted at rest. raw_narrative stored encrypted. Everything else references cases.id (UUID) — never the index number directly.</p>
+<div id="e2"></div>
+<script type="module">
+import mermaid from 'https://esm.sh/mermaid@11/dist/mermaid.esm.min.mjs';
+const dark=matchMedia('(prefers-color-scheme: dark)').matches;
+await document.fonts.ready;
+mermaid.initialize({startOnLoad:false,theme:'base',fontFamily:'"Anthropic Sans",sans-serif',
+  themeVariables:{darkMode:dark,fontSize:'13px',fontFamily:'"Anthropic Sans",sans-serif',
+    lineColor:dark?'#9c9a92':'#73726c',textColor:dark?'#c2c0b6':'#3d3d3a',
+    primaryColor:dark?'#2A1A3A':'#EEEDFE',primaryTextColor:dark?'#CECBF6':'#3C3489',
+    primaryBorderColor:dark?'#7F77DD':'#534AB7',
+    secondaryColor:dark?'#1A3A2A':'#E1F5EE',tertiaryColor:dark?'#1A2A3A':'#E6F1FB'}});
+const d=`erDiagram
+  cases{
+    uuid id PK
+    string internal_ref UK
+    text index_number_enc "ENCRYPTED"
+    uuid court_id FK
+    uuid judge_id FK
+    text case_name_enc "ENCRYPTED"
+    text plaintiff_enc "ENCRYPTED"
+    text defendant_enc "ENCRYPTED"
+    string case_type
+    string track
+    string stage
+    string status
+    date filed_date
+    jsonb extra_data
+    timestamp created_at
+    timestamp updated_at
+  }
+  case_appearances{
+    uuid id PK
+    uuid case_id FK
+    uuid court_id FK
+    uuid judge_id FK
+    uuid part_id FK
+    date appearance_date
+    string appearance_type
+    string outcome
+    string source
+    timestamp created_at
+  }
+  incidents{
+    uuid id PK
+    string incident_id UK
+    uuid case_id FK
+    uuid court_id FK
+    uuid judge_id FK
+    uuid part_id FK
+    string title
+    date incident_date
+    string reported_by
+    string domain
+    string risk_level
+    string risk_layer
+    string status
+    string source_filename
+    text raw_narrative_enc "ENCRYPTED"
+    text trigger_description
+    string trigger_source
+    string deadline
+    text risk_analysis
+    text root_cause
+    text resolution_method
+    text resolution_detail
+    boolean resolved
+    timestamptz resolved_at
+    jsonb extracted_contacts
+    numeric ai_confidence
+    jsonb ai_metadata
+    timestamp created_at
+    timestamp updated_at
+  }
+  incident_updates{
+    uuid id PK
+    uuid incident_id FK
+    string updated_by
+    string update_type
+    text update_note
+    timestamp created_at
+  }
+  incident_participants{
+    uuid id PK
+    uuid incident_id FK
+    string name
+    string role
+    string affiliation
+    string phone
+    string email
+    text what_they_confirmed
+    boolean contact_created
+    uuid contact_id FK
+    timestamp created_at
+  }
+  cases||--o{case_appearances:"has"
+  cases||--o{incidents:"generates"
+  incidents||--o{incident_updates:"receives"
+  incidents||--o{incident_participants:"involves"`;
+const{svg}=await mermaid.render('e2-svg',d);
+document.getElementById('e2').innerHTML=svg;
+document.querySelectorAll('#e2 svg.erDiagram .node').forEach(n=>{
+  const fp=n.querySelector('path[d]');if(!fp)return;
+  const nums=fp.getAttribute('d').match(/-?[\d.]+/g)?.map(Number);
+  if(!nums||nums.length<8)return;
+  const xs=[nums[0],nums[2],nums[4],nums[6]],ys=[nums[1],nums[3],nums[5],nums[7]];
+  const x=Math.min(...xs),y=Math.min(...ys),w=Math.max(...xs)-x,h=Math.max(...ys)-y;
+  const r=document.createElementNS('http://www.w3.org/2000/svg','rect');
+  r.setAttribute('x',x);r.setAttribute('y',y);r.setAttribute('width',w);r.setAttribute('height',h);r.setAttribute('rx','8');
+  for(const a of['fill','stroke','stroke-width','class','style'])if(fp.hasAttribute(a))r.setAttribute(a,fp.getAttribute(a));
+  fp.replaceWith(r);
+});
+document.querySelectorAll('#e2 svg.erDiagram .row-rect-odd path,#e2 svg.erDiagram .row-rect-even path').forEach(p=>p.setAttribute('stroke','none'));
+</script>
+
+[schema_v2_layer2_cases_incidents.html](https://github.com/user-attachments/files/26841770/schema_v2_layer2_cases_incidents.html)
+
+
+
 *This project started from a real operational incident. Every design decision traces back to something that actually happened.*
+
+
