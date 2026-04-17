@@ -1,0 +1,303 @@
+# Dev Log — April 17, 2026
+
+**Project:** Litigation Operations Intelligence System
+**Status:** Pre-build — architecture v2 complete
+**Schema version:** v2 (PII-safe)
+**Next session:** Deploy schema to Supabase, build AI ingestion layer
+
+---
+
+## What this project is
+
+A litigation intelligence system built to capture, structure, and make searchable the institutional knowledge hidden inside a law firm's operational history.
+
+The core problem: a mid-size NY litigation firm holds enormous operational intelligence — which clerks to call, how each judge behaves, what eCourts labels actually mean in practice, which courtrooms map to which parts, what to do when court orders have typos — but all of it lives in individual people's heads and buried inside case files. When those people are not available, the firm flies blind.
+
+This system changes that by treating every operational incident as structured data, extracting intelligence from it automatically, and making it queryable by any attorney in real time.
+
+---
+
+## What happened today
+
+Today was the full architecture session — two full passes. The first pass produced a working design. The second pass corrected it for privacy, safety, and long-term defensibility. Both passes are documented here because the reasoning behind the corrections is as valuable as the corrections themselves.
+
+---
+
+## Session 1 — Initial architecture
+
+### The incident type that started this
+
+The session opened with a real incident involving a Final Conference (NI-FCP) appearance in Kings County Supreme Court. The operational problem: judge assignment unclear in eCourts, two possible judges each associated with a different courtroom, general part rules and judge-specific standing orders in direct conflict, three possible clerk contacts with no clear routing logic.
+
+Resolution required calling the correct part clerk directly, with a calendar clerk as fallback. The answer existed but depended entirely on one person knowing the right call sequence.
+
+This is the structural problem: court data exists in fragments across eCourts, part rules, and judge-specific standing orders with no authoritative tiebreaker and no system to surface the conflict.
+
+### Incidents reviewed and classified
+
+Ten incident documents were reviewed spanning multiple NY courts and operational domains.
+
+**Incident domains identified:**
+
+| Domain | Description |
+|---|---|
+| Court ops | Judge/room/clerk ambiguity, eCourts mislabels, appearance uncertainty |
+| Court order errors | Typos creating hard compliance conflicts with real-world constraints |
+| Case strategy | MSJ outcomes, expert strategy, liability chain analysis |
+| Client management | Settlement expectation misalignment, communication breakdown |
+| Firm operations | Manual workflows, repetitive low-value tasks |
+| OPA / negotiation | Opposing counsel behavior, negotiation dynamics |
+
+**Universal incident structure identified:**
+
+Every incident regardless of type follows the same spine:
+
+```
+TRIGGER → CONDITION → ACTIONS TAKEN → OUTCOME → LESSON
+```
+
+The database is built around this structure.
+
+**Key patterns observed:**
+
+- eCourts is not reliable as sole source — labels frequently misrepresent procedural posture
+- General part rules and judge-specific standing orders conflict regularly with no documented hierarchy
+- Judicial behavior is a genuine risk variable — enforcement style determines how errors are treated
+- Litigation timelines are often negotiated informally before any court filing
+- Record volume does not correlate with case strength — liability may be concentrated in a narrow window
+
+### What existing tools do and don't do
+
+Westlaw, Lexis, eCourts, Clio, Harvey, CoCounsel, Docket Alarm — none of them capture how courts actually behave. They capture what rules say, what was filed, what is due. They don't capture that calling the part clerk directly is faster than trusting eCourts, or that a specific judge's enforcement style makes a court order typo a critical risk rather than an administrative nuisance.
+
+That knowledge exists only in experienced staff. This system makes it institutional.
+
+### System flowchart — v1
+
+Designed the full AI ingestion and storage flow:
+
+1. Input — any document format
+2. AI agent reads and detects structure
+3. Document type detection
+4. Domain classification
+5. Risk layer tagging
+6. Structured extraction
+7. Conflict detection — flag contradictions, store both sides
+8. Three-layer storage — incident log (immutable) / update log (append-only) / reference layer (living)
+9. Attorney-facing output — query by court, judge, case stage
+
+### Incident report template — what changed
+
+**First attempt was wrong.** Compressed the narrative into short fillable fields. This stripped the detail that makes incidents valuable — named contacts, failure documentation, causal chains.
+
+**Correct structure:**
+
+```
+ANCHOR BLOCK     — 8 machine-readable fields (AI grabs first)
+     ↓
+FULL NARRATIVE   — write everything, exactly as detailed as raw reports
+     ↓
+LESSON BLOCK     — IF/THEN rule, pattern, reference layer flag (AI extracts last)
+     ↓
+UPDATE LOG       — append-only timestamped entries
+```
+
+The natural writing style in these reports is the asset. The template wraps it, not replaces it.
+
+### Initial database schema — v1
+
+**Technology: PostgreSQL on Supabase.** Chosen over NoSQL because the data is relational and JSONB handles court-specific edge cases.
+
+18 tables across 3 layers:
+
+- Layer 1 (court reference): `courts` `judges` `parts` `court_contacts` `court_rules`
+- Layer 2 (cases + incidents): `cases` `case_appearances` `incidents` `incident_updates` `incident_participants`
+- Layer 3 (knowledge): `lessons_learned` `conflict_flags` `judge_profiles` `ecourts_flags` `ingestion_log`
+
+---
+
+## Session 2 — Corrections and privacy hardening
+
+After the initial design was complete, three important questions were raised that required revising the architecture. Each is documented here with the reasoning.
+
+### Correction 1 — NYSCEF data and AI ingestion
+
+**Question raised:** NYSCEF documents can't be used to train AI — does using them to improve legal ops cause a problem?
+
+**Answer:** No conflict. The restriction applies to using court documents as training data for a commercial AI model — a fundamentally different activity from using an AI to read a public filing and extract operational facts into a private database. A paralegal reading a NYSCEF document and writing down the appearance date and judge assignment is legally and ethically identical to what this system does. The underlying data is public record. The extracted operational facts are firm property.
+
+**What this means for the system:** NYSCEF is a clean, appropriate data source for Phase 1. Public filings, appearance history, court orders, part rules — all legitimate. The only distinction that matters: store extracted facts, not the full documents themselves.
+
+### Correction 2 — PII risk and combination exposure
+
+**Question raised:** Is there PII risk in the schema, particularly around index numbers?
+
+**Initial assessment was incomplete.** The v1 schema stored index numbers, case names, plaintiff names, and defendant names as plain text fields. While each may be technically public, the combination creates meaningful risk.
+
+**The real risk is combination exposure:**
+
+```
+index_number + case_name + plaintiff + defendant + case_type + judge + incident_narrative
+```
+
+This chain, taken together, reconstructs identifiable information about a real person's legal matter. The sensitivity comes from combination, not from any single field.
+
+**Changes made in schema v2:**
+
+- `cases.internal_ref` added — human-readable pseudonymous ID (e.g. `CASE-2026-0041`) that is what the operational layer uses everywhere
+- `cases.index_number` renamed to `index_number_enc` — stored encrypted, only decrypted for explicit NYSCEF lookup
+- `cases.case_name`, `cases.plaintiff`, `cases.defendant` — all stored encrypted (`_enc` suffix convention)
+- `incidents.raw_narrative` renamed to `raw_narrative_enc` — stored encrypted since narratives may contain names and case details
+- All other tables reference `cases.id` (UUID) — the index number never propagates through the operational layer
+
+**Fields by risk level:**
+
+| Field | Table | Risk | Treatment |
+|---|---|---|---|
+| `index_number` | cases | Medium — public but linkable | Encrypted, reference by internal_ref |
+| `case_name` | cases | High — identifies parties | Encrypted |
+| `plaintiff` | cases | High — identifies person | Encrypted |
+| `defendant` | cases | High — identifies person | Encrypted |
+| `raw_narrative` | incidents | High — may contain names | Encrypted |
+| `reported_by` | incidents | Low — internal staff | Plain text, internal tool |
+| `contact_name` | court_contacts | Low — public court staff | Plain text |
+| `name` | incident_participants | Medium — clerks and attorneys | Plain text, internal tool |
+
+**New step added to flowchart:** PII detection and pseudonymization now sit between AI ingestion and document type detection. Nothing touches the database until these two steps run.
+
+### Correction 3 — Judge profiles and judicial sensitivity
+
+**Question raised:** Does building behavioral profiles on judges create problems?
+
+**Answer:** No, if done correctly. Every observation in judge profiles comes from public court proceedings — open court, on the record, observable by any attorney who appeared. Bar associations, legal directories, and attorney networks have shared this kind of information informally forever. The system just structures what already exists informally.
+
+**What courts and judges actually care about that this system does not do:**
+- Ex parte communication — the system documents behavior, it doesn't contact judges
+- Misrepresentation of court orders — the system flags uncertainty, doesn't assert false rules
+- Using judicial information to manipulate proceedings — the system helps attorneys comply correctly
+
+**The line that matters:** keep profiles factual and operational, not evaluative.
+
+Good: "Enforces scheduling orders strictly with low tolerance for adjournments"
+Bad: "Difficult judge who punishes attorneys for scheduling conflicts"
+
+The first helps attorneys comply correctly. The second is an editorial judgment that adds no operational value and creates unnecessary risk.
+
+**New field added to `judge_profiles`:**
+
+`observation_type` — categorizes observations as `procedural`, `scheduling`, `communication`, or `enforcement`. This keeps profiles structured around operational facts rather than general character assessments.
+
+### Schema v2 — summary of all changes
+
+**`cases` table:**
+- Added `internal_ref TEXT UNIQUE` — pseudonymous public-facing ID
+- Renamed sensitive fields with `_enc` suffix — encrypted at rest
+- All FK references from other tables use `cases.id` (UUID) not index number
+
+**`incidents` table:**
+- `raw_narrative` → `raw_narrative_enc` — encrypted at rest
+
+**`judge_profiles` table:**
+- Added `observation_type` field — procedural / scheduling / communication / enforcement
+
+**`ingestion_log` table:**
+- Added `pii_detected BOOLEAN`
+- Added `pii_fields_found JSONB` — records what PII was found and how it was handled
+
+**Flowchart v2 — two new steps:**
+- PII detection — flags names, index numbers, party data before extraction
+- Pseudonymization — index no → internal ref, sensitive fields → encrypted columns, PII vault for access-controlled storage
+
+---
+
+## Data sources
+
+### Phase 1 — Forward-looking (build now)
+- New incident reports ingested going forward
+- NYSCEF public records by index number (lookup only, not stored in full)
+- Manual court contact verification
+- No PII issues — index number encrypted on entry, internal ref used throughout
+
+### Phase 2 — Backward-looking (later, carefully)
+- Existing case files live in the firm's case management system
+- Contains privileged communications, attorney notes, client data — cannot be touched directly
+- Approach: human extracts only non-sensitive operational facts with proper access controls
+- The encrypted index number connects existing cases to the operational layer without exposing data
+
+---
+
+## Competitive landscape
+
+| Tool | What it does | What it misses |
+|---|---|---|
+| Westlaw / Lexis | Published rules and case law | How courts actually behave |
+| Clio / Litify | Deadlines, billing, docketing | Operational intelligence |
+| Harvey / CoCounsel | AI research and drafting | Firm-specific institutional knowledge |
+| Docket Alarm | Static court rule tracking | Incident layer, judge profiles, clerk routing |
+| eCourts / NYSCEF | Filing records | Confirmed future assignments, reliable status |
+
+**What no tool captures:** eCourts labels can be wrong. Certain counties accept late submissions informally. A new judge assignment can mean same-day scheduling. OPA non-appearance may be deliberate delay. This system captures all of it.
+
+---
+
+## Strategic context — solutions architecture
+
+This project was evaluated today against three professional frameworks:
+
+**Forward Deployed Engineering** — embedding in a real operational environment, identifying where technology solves real problems, building solutions directly in context. This project is a textbook FDE example — built from inside a real incident, on the day it occurred.
+
+**Legal Operations** — reducing attorney time on non-billable operational confusion, building scalable knowledge systems, reducing risk from information gaps. This is the entire legal ops mandate.
+
+**Solutions Architecture** — designing technically sound systems that solve domain-specific problems at scale. The three-layer architecture, PostgreSQL with JSONB, pseudonymization pattern, append-only audit trail — these are SA-level decisions.
+
+**The combination of all three is the rare thing.** Most people in these roles do one well. The ceiling in solutions architecture is higher because the same system design can be deployed across many firms, many industries, and many contexts. The domain knowledge built here becomes more valuable at every step.
+
+**Demo target:** 200-300 incidents by end of year from daily practice. Enough to produce confident judge profiles, meaningful eCourts reliability flags, and IF/THEN rules with high confidence scores backed by repeated confirmation. A demo with 8 months of real operational data is significantly stronger than one with synthetic examples.
+
+---
+
+## Courts in scope (initial)
+
+| Court | County | Operational notes |
+|---|---|---|
+| Kings County Supreme Court | Kings | Discovery parts shared infrastructure. Judge assignment not deterministic. eCourts unreliable for future appearances. General and judge-specific rules frequently conflict. |
+| Nassau County Supreme Court | Nassau | Accelerated post-conference workflow. Strict judicial oversight in certain parts. Court order errors treated as compliance failures. |
+| Bronx County Supreme Court | Bronx | Late submissions frequently accepted. eCourts motion labels misrepresent procedural status. Direct clerk contact consistently more reliable than system. |
+| Westchester County Supreme Court | Westchester | Strict procedural adherence. Filing receipt must be confirmed directly with court — submission alone is insufficient. |
+| Monroe County Supreme Court | Monroe | Standard behavior. No special flags identified yet. |
+
+---
+
+## Architecture decisions log
+
+| Decision | Chosen | Reason |
+|---|---|---|
+| Database | PostgreSQL | Relational fits, JSONB handles edge cases |
+| Hosting | Supabase | Hosted Postgres, built-in dashboard, free tier |
+| Court isolation | Court as universe separator | Kings and Nassau don't share data |
+| Incident storage | Immutable raw narrative | Source of truth never overwritten |
+| Case identifier | Internal ref + encrypted index | Pseudonymization without losing lookup ability |
+| Sensitive fields | Encrypted at rest (`_enc` suffix) | Combination risk even on public data |
+| Update pattern | Append-only | Full audit trail, nothing lost |
+| Conflict handling | Store both sides, flag uncertainty | Don't resolve prematurely |
+| Judge profiles | Factual + operational only | Defensible, useful, no editorial judgment |
+| Judge profile categorization | observation_type field | Structures behavior by category not personality |
+| Knowledge traceability | All lessons link to source incident | Every fact traceable to what taught it |
+| PII in ingestion | Detect and pseudonymize before storage | Combination risk managed at entry point |
+
+---
+
+## What's next
+
+- [ ] Update schema SQL file with all v2 changes
+- [ ] Set up Supabase project
+- [ ] Run schema v2
+- [ ] Build AI ingestion endpoint with PII detection step
+- [ ] Test on incident documents from today's session
+- [ ] Build attorney-facing query interface
+- [ ] Populate court reference layer for all 5 courts
+- [ ] Begin daily incident logging going forward
+
+---
+
+*This log covers two full architecture passes completed on April 17, 2026. The second pass is more valuable than the first — the corrections document thinking that doesn't show up in code but shapes every decision that follows.*
