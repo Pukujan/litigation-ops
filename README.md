@@ -1,4 +1,4 @@
-# Litigation Operations Intelligence System
+# Litigation Operations Intelligence System ( Schema research )
 
 A knowledge infrastructure layer for litigation firms — capturing operational intelligence from real incidents and making it queryable before the next emergency.
 
